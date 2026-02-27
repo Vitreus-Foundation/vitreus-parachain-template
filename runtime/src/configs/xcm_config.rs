@@ -31,6 +31,11 @@ use xcm_builder::{
 };
 use xcm_executor::XcmExecutor;
 
+pub const ASSETS_PALLET_ID: u8 = 5;
+pub const VNRG_ASSET_ID: u128 = 0;
+pub const SNRG_ASSET_ID: u128 = 1;
+pub const LNRG_ASSET_ID: u128 = 2;
+
 parameter_types! {
 	pub const RelayLocation: Location = Location::parent();
 	pub const RelayNetwork: Option<NetworkId> = None;
@@ -38,6 +43,21 @@ parameter_types! {
 	// For the real deployment, it is recommended to set `RelayNetwork` according to the relay chain
 	// and prepend `UniversalLocation` with `GlobalConsensus(RelayNetwork::get())`.
 	pub UniversalLocation: InteriorLocation = Parachain(ParachainInfo::parachain_id().into()).into();
+}
+
+parameter_types! {
+	pub EnergyLocation: Location = Location::new(
+		1,
+		[PalletInstance(ASSETS_PALLET_ID), GeneralIndex(VNRG_ASSET_ID)]
+	);
+	pub StaticEnergyLocation: Location = Location::new(
+		1,
+		[PalletInstance(ASSETS_PALLET_ID), GeneralIndex(SNRG_ASSET_ID)]
+	);
+	pub LiquidEnergyLocation: Location = Location::new(
+		1,
+		[PalletInstance(ASSETS_PALLET_ID), GeneralIndex(LNRG_ASSET_ID)]
+	);
 }
 
 /// Type for specifying how a `Location` can be converted into an `AccountId`. This is used
@@ -56,8 +76,12 @@ pub type LocationToAccountId = (
 pub type LocalAssetTransactor = FungibleAdapter<
 	// Use this currency:
 	Balances,
-	// Use this currency when it is a fungible asset matching the given location or name:
-	IsConcrete<RelayLocation>,
+	// Use this currency when the asset is a fungible with one of the specified concrete locations:
+	(
+		IsConcrete<EnergyLocation>,
+		IsConcrete<StaticEnergyLocation>,
+		IsConcrete<LiquidEnergyLocation>
+	),
 	// Do a simple punn to convert an AccountId32 Location into a native chain account ID:
 	LocationToAccountId,
 	// Our chain's account ID type (we can't get away without mentioning it explicitly):
@@ -119,6 +143,23 @@ pub type Barrier = TrailingSetTopicAsId<
 	>,
 >;
 
+parameter_types! {
+	pub EnergyFilter: AssetFilter = Wild((EnergyLocation::get(), WildFungible).into());
+	pub EnergyFromRelayChain: (AssetFilter, Location) = (EnergyFilter::get(), RelayLocation::get());
+
+	pub StaticEnergyFilter: AssetFilter = Wild((StaticEnergyLocation::get(), WildFungible).into());
+	pub StaticEnergyFromRelayChain: (AssetFilter, Location) = (StaticEnergyFilter::get(), RelayLocation::get());
+
+	pub LiquidEnergyFilter: AssetFilter = Wild((LiquidEnergyLocation::get(), WildFungible).into());
+	pub LiquidEnergyFromRelayChain: (AssetFilter, Location) = (LiquidEnergyFilter::get(), RelayLocation::get());
+}
+
+pub type TrustedTeleporters = (
+	xcm_builder::Case<EnergyFromRelayChain>,
+	xcm_builder::Case<StaticEnergyFromRelayChain>,
+	xcm_builder::Case<LiquidEnergyFromRelayChain>,
+);
+
 pub struct XcmConfig;
 impl xcm_executor::Config for XcmConfig {
 	type RuntimeCall = RuntimeCall;
@@ -128,12 +169,15 @@ impl xcm_executor::Config for XcmConfig {
 	type AssetTransactor = LocalAssetTransactor;
 	type OriginConverter = XcmOriginToTransactDispatchOrigin;
 	type IsReserve = NativeAsset;
-	type IsTeleporter = (); // Teleporting is disabled.
+	type IsTeleporter = TrustedTeleporters;
 	type UniversalLocation = UniversalLocation;
 	type Barrier = Barrier;
 	type Weigher = FixedWeightBounds<UnitWeightCost, RuntimeCall, MaxInstructions>;
-	type Trader =
-		UsingComponents<WeightToFee, RelayLocation, AccountId, Balances, ToAuthor<Runtime>>;
+	type Trader = (
+		UsingComponents<WeightToFee, EnergyLocation, AccountId, Balances, ToAuthor<Runtime>>,
+		UsingComponents<WeightToFee, StaticEnergyLocation, AccountId, Balances, ToAuthor<Runtime>>,
+		UsingComponents<WeightToFee, LiquidEnergyLocation, AccountId, Balances, ToAuthor<Runtime>>,
+	);
 	type ResponseHandler = PolkadotXcm;
 	type AssetTrap = PolkadotXcm;
 	type AssetClaims = PolkadotXcm;
