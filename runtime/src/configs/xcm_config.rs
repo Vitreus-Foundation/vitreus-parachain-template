@@ -8,8 +8,8 @@ use polkadot_sdk::{
 };
 
 use frame_support::{
-	parameter_types,
-	traits::{ConstU32, Contains, Everything, Nothing},
+	ensure, parameter_types,
+	traits::{ConstU32, Contains, Everything, Nothing, ProcessMessageError},
 	weights::Weight,
 };
 use frame_system::EnsureRoot;
@@ -23,13 +23,16 @@ use polkadot_sdk::{
 use xcm::latest::prelude::*;
 use xcm_builder::{
 	AccountId32Aliases, AllowExplicitUnpaidExecutionFrom, AllowTopLevelPaidExecutionFrom,
-	DenyReserveTransferToRelayChain, EnsureXcmOrigin, FixedWeightBounds,
-	FrameTransactionalProcessor, FungibleAdapter, IsConcrete, NativeAsset, ParentIsPreset,
-	RelayChainAsNative, SiblingParachainAsNative, SiblingParachainConvertsVia,
+	CreateMatcher, DenyReserveTransferToRelayChain, EnsureXcmOrigin, FixedWeightBounds,
+	FrameTransactionalProcessor, FungibleAdapter, IsConcrete, MatchXcm, NativeAsset,
+	ParentIsPreset, RelayChainAsNative, SiblingParachainAsNative, SiblingParachainConvertsVia,
 	SignedAccountId32AsNative, SignedToAccountId32, SovereignSignedViaLocation, TakeWeightCredit,
 	TrailingSetTopicAsId, UsingComponents, WithComputedOrigin, WithUniqueTopic,
 };
-use xcm_executor::XcmExecutor;
+use xcm_executor::{
+	traits::{Properties, ShouldExecute},
+	XcmExecutor,
+};
 
 pub const ASSETS_PALLET_ID: u8 = 5;
 pub const VNRG_ASSET_ID: u128 = 0;
@@ -80,7 +83,7 @@ pub type LocalAssetTransactor = FungibleAdapter<
 	(
 		IsConcrete<EnergyLocation>,
 		IsConcrete<StaticEnergyLocation>,
-		IsConcrete<LiquidEnergyLocation>
+		IsConcrete<LiquidEnergyLocation>,
 	),
 	// Do a simple punn to convert an AccountId32 Location into a native chain account ID:
 	LocationToAccountId,
@@ -132,6 +135,7 @@ pub type Barrier = TrailingSetTopicAsId<
 			TakeWeightCredit,
 			WithComputedOrigin<
 				(
+					AllowUnpaidTeleportFromRelayChain,
 					AllowTopLevelPaidExecutionFrom<Everything>,
 					AllowExplicitUnpaidExecutionFrom<ParentOrParentsExecutivePlurality>,
 					// ^^^ Parent and its exec plurality get free execution
@@ -247,4 +251,43 @@ impl pallet_xcm::Config for Runtime {
 impl cumulus_pallet_xcm::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type XcmExecutor = XcmExecutor<XcmConfig>;
+}
+
+pub struct AllowUnpaidTeleportFromRelayChain;
+impl ShouldExecute for AllowUnpaidTeleportFromRelayChain {
+	fn should_execute<RuntimeCall>(
+		origin: &Location,
+		instructions: &mut [Instruction<RuntimeCall>],
+		_max_weight: Weight,
+		_properties: &mut Properties,
+	) -> Result<(), ProcessMessageError> {
+		ensure!(matches!(origin.unpack(), (1, [])),	ProcessMessageError::Unsupported);
+
+		instructions
+			.matcher()
+			.assert_remaining_insts(4)?
+			.match_next_inst(|inst| match inst {
+				ReceiveTeleportedAsset(..) => Ok(()),
+				_ => Err(ProcessMessageError::BadFormat),
+			})?
+			.match_next_inst(|inst| match inst {
+				ClearOrigin => Ok(()),
+				_ => Err(ProcessMessageError::BadFormat),
+			})?
+			.match_next_inst(|inst| match inst {
+				BuyExecution { weight_limit, .. } => {
+					// Force `BuyExecution` to be a no-op.
+					// In the XCM executor, an `Unlimited` weight limit causes `BuyExecution` to skip fee deduction.
+					*weight_limit = Unlimited;
+					Ok(())
+				}
+				_ => Err(ProcessMessageError::BadFormat),
+			})?
+			.match_next_inst(|inst| match inst {
+				DepositAsset { .. } => Ok(()),
+				_ => Err(ProcessMessageError::BadFormat),
+			})?;
+
+		Ok(())
+	}
 }
